@@ -1,0 +1,798 @@
+diff -uN -r vmnet-only-orig/bridge.c vmnet-only/bridge.c
+--- vmnet-only-orig/bridge.c	2011-09-24 12:44:33.000000000 +1000
++++ vmnet-only/bridge.c	2013-12-27 00:05:57.565208485 +1100
+@@ -112,8 +112,6 @@
+ static Bool VNetBridgeIsDeviceWireless(struct net_device *dev);
+ static void VNetBridgePortsChanged(VNetJack *this);
+ static int  VNetBridgeIsBridged(VNetJack *this);
+-static int  VNetBridgeProcRead(char *page, char **start, off_t off,
+-                               int count, int *eof, void *data);
+ static void VNetBridgeComputeHeaderPosIPv6(struct sk_buff *skb);
+ static PacketStatus VNetCallSMACFunc(struct SMACState *state,
+                                      struct sk_buff **skb, void *startOfData,
+@@ -274,6 +272,53 @@
+ /*
+  *----------------------------------------------------------------------
+  *
++ * VNetBridgeProcShow --
++ *
++ *      Callback for read operation on this bridge entry in vnets proc fs.
++ *
++ * Results:
++ *      Length of read operation.
++ *
++ * Side effects:
++ *      None.
++ *
++ *----------------------------------------------------------------------
++ */
++
++int
++VNetBridgeProcShow(struct seq_file *seqf, // IN/OUT: buffer to write into
++                   void    *data)   // IN: client data - pointer to bridge
++{
++   VNetBridge *bridge = (VNetBridge*)data;
++
++   if (!bridge) {
++      return 0;
++   }
++
++   VNetPrintPort(&bridge->port, seqf);
++
++   seq_printf(seqf, "dev %s ", bridge->name);
++
++   seq_printf(seqf, "\n");
++
++   return 0;
++}
++
++static int proc_bridge_open(struct inode *inode, struct file *file)
++{
++       return single_open(file, VNetBridgeProcShow, PDE_DATA(inode));
++}
++
++static const struct file_operations proc_bridge_fops = {
++       .open           = proc_bridge_open,
++       .read           = seq_read,
++       .llseek         = seq_lseek,
++       .release        = seq_release,
++};
++
++/*
++ *----------------------------------------------------------------------
++ *
+  * VNetBridge_Create --
+  *
+  *      Creates a bridge. Allocates struct, allocates internal device,
+@@ -368,17 +413,14 @@
+     * Make proc entry for this jack.
+     */
+ 
+-   retval = VNetProc_MakeEntry(bridge->port.jack.name, S_IFREG,
+-                               &bridge->port.jack.procEntry);
++   retval = VNetProc_MakeEntryOps(bridge->port.jack.name, S_IFREG,
++                               &bridge->port.jack.procEntry, &proc_bridge_fops, bridge);
+    if (retval) {
+       if (retval == -ENXIO) {
+          bridge->port.jack.procEntry = NULL;
+       } else {
+          goto out;
+       }
+-   } else {
+-      bridge->port.jack.procEntry->read_proc = VNetBridgeProcRead;
+-      bridge->port.jack.procEntry->data = bridge;
+    }
+ 
+    /*
+@@ -1793,45 +1835,3 @@
+    return 0;
+ }
+ 
+-
+-/*
+- *----------------------------------------------------------------------
+- *
+- * VNetBridgeProcRead --
+- *
+- *      Callback for read operation on this bridge entry in vnets proc fs.
+- *
+- * Results:
+- *      Length of read operation.
+- *
+- * Side effects:
+- *      None.
+- *
+- *----------------------------------------------------------------------
+- */
+-
+-int
+-VNetBridgeProcRead(char    *page,   // IN/OUT: buffer to write into
+-                   char   **start,  // OUT: 0 if file < 4k, else offset into page
+-                   off_t    off,    // IN: (unused) offset of read into the file
+-                   int      count,  // IN: (unused) maximum number of bytes to read
+-                   int     *eof,    // OUT: TRUE if there is nothing more to read
+-                   void    *data)   // IN: client data - pointer to bridge
+-{
+-   VNetBridge *bridge = (VNetBridge*)data;
+-   int len = 0;
+-
+-   if (!bridge) {
+-      return len;
+-   }
+-
+-   len += VNetPrintPort(&bridge->port, page+len);
+-
+-   len += sprintf(page+len, "dev %s ", bridge->name);
+-
+-   len += sprintf(page+len, "\n");
+-
+-   *start = 0;
+-   *eof   = 1;
+-   return len;
+-}
+diff -uN -r vmnet-only-orig/driver.c vmnet-only/driver.c
+--- vmnet-only-orig/driver.c	2013-04-06 23:59:44.000000000 +1100
++++ vmnet-only/driver.c	2013-12-27 00:05:57.566208494 +1100
+@@ -1662,21 +1662,17 @@
+  *----------------------------------------------------------------------
+  */
+ 
+-int
++void
+ VNetPrintJack(const VNetJack *jack, // IN: jack
+-              char           *buf)  // OUT: info about jack
++              struct seq_file *seqf)  // OUT: info about jack
+ {
+-   int len = 0;
+-
+    read_lock(&vnetPeerLock);
+    if (!jack->peer) {
+-      len += sprintf(buf+len, "connected not ");
++      seq_printf(seqf, "connected not ");
+    } else {
+-      len += sprintf(buf+len, "connected %s ", jack->peer->name);
++      seq_printf(seqf, "connected %s ", jack->peer->name);
+    }
+    read_unlock(&vnetPeerLock);
+-
+-   return len;
+ }
+ 
+ 
+@@ -1696,52 +1692,48 @@
+  *----------------------------------------------------------------------
+  */
+ 
+-int
++void
+ VNetPrintPort(const VNetPort *port, // IN: port
+-              char           *buf)  // OUT: info about port
++              struct seq_file *seqf)  // OUT: info about port
+ {
+-   int len = 0;
++   VNetPrintJack(&port->jack, seqf);
+ 
+-   len += VNetPrintJack(&port->jack, buf+len);
+-
+-   len += sprintf(buf+len, "mac %02x:%02x:%02x:%02x:%02x:%02x ",
++   seq_printf(seqf, "mac %02x:%02x:%02x:%02x:%02x:%02x ",
+                   port->paddr[0], port->paddr[1], port->paddr[2],
+                   port->paddr[3], port->paddr[4], port->paddr[5]);
+ 
+-   len += sprintf(buf+len, "ladrf %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x ",
++   seq_printf(seqf, "ladrf %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x ",
+                   port->ladrf[0], port->ladrf[1], port->ladrf[2],
+                   port->ladrf[3], port->ladrf[4], port->ladrf[5],
+                   port->ladrf[6], port->ladrf[7]);
+ 
+-   len += sprintf(buf+len, "flags IFF_RUNNING");
++   seq_printf(seqf, "flags IFF_RUNNING");
+ 
+    if (port->flags & IFF_UP) {
+-      len += sprintf(buf+len, ",IFF_UP");
++      seq_printf(seqf, ",IFF_UP");
+    }
+ 
+    if (port->flags & IFF_BROADCAST) {
+-      len += sprintf(buf+len, ",IFF_BROADCAST");
++      seq_printf(seqf, ",IFF_BROADCAST");
+    }
+ 
+    if (port->flags & IFF_DEBUG) {
+-      len += sprintf(buf+len, ",IFF_DEBUG");
++      seq_printf(seqf, ",IFF_DEBUG");
+    }
+ 
+    if (port->flags & IFF_PROMISC) {
+-      len += sprintf(buf+len, ",IFF_PROMISC");
++      seq_printf(seqf, ",IFF_PROMISC");
+    }
+ 
+    if (port->flags & IFF_MULTICAST) {
+-      len += sprintf(buf+len, ",IFF_MULTICAST");
++      seq_printf(seqf, ",IFF_MULTICAST");
+    }
+ 
+    if (port->flags & IFF_ALLMULTI) {
+-      len += sprintf(buf+len, ",IFF_ALLMULTI");
++      seq_printf(seqf, ",IFF_ALLMULTI");
+    }
+ 
+-   len += sprintf(buf+len, " ");
+-
+-   return len;
++   seq_printf(seqf, " ");
+ }
+ 
+ 
+diff -uN -r vmnet-only-orig/hub.c vmnet-only/hub.c
+--- vmnet-only-orig/hub.c	2013-04-06 23:59:44.000000000 +1100
++++ vmnet-only/hub.c	2013-12-27 00:05:57.567208504 +1100
+@@ -25,6 +25,7 @@
+ #include <linux/sched.h>
+ #include <linux/slab.h>
+ #include <linux/poll.h>
++#include <linux/seq_file.h>
+ 
+ #include <linux/netdevice.h>
+ #include <linux/etherdevice.h>
+@@ -71,8 +72,6 @@
+ static Bool VNetHubCycleDetect(VNetJack *this, int generation);
+ static void VNetHubPortsChanged(VNetJack *this);
+ static int  VNetHubIsBridged(VNetJack *this);
+-static int  VNetHubProcRead(char *page, char **start, off_t off,
+-                            int count, int *eof, void *data);
+ 
+ static VNetHub *vnetHub = NULL;
+ 
+@@ -247,6 +246,53 @@
+ /*
+  *----------------------------------------------------------------------
+  *
++ * VNetHubProcShow --
++ *
++ *      Callback for read operation on hub entry in vnets proc fs.
++ *
++ * Results:
++ *      Length of read operation.
++ *
++ * Side effects:
++ *      None.
++ *
++ *----------------------------------------------------------------------
++ */
++
++int
++VNetHubProcShow(struct seq_file  *seqf,   // IN/OUT: buffer to write into
++                void    *data)   // IN: client data - not used
++{
++   VNetJack *jack = (VNetJack*)data;
++   VNetHub *hub;
++
++   if (!jack || !jack->private) {
++      return 0;
++   }
++   hub = (VNetHub*)jack->private;
++
++   VNetPrintJack(jack, seqf);
++
++   seq_printf(seqf, "tx %u ", hub->stats[jack->index].tx);
++   seq_printf(seqf, "\n");
++   return 0;
++}
++
++static int proc_hub_open(struct inode *inode, struct file *file)
++{
++       return single_open(file, VNetHubProcShow, PDE_DATA(inode));
++}
++
++static const struct file_operations proc_hub_fops = {
++       .open           = proc_hub_open,
++       .read           = seq_read,
++       .llseek         = seq_lseek,
++       .release        = seq_release,
++};
++
++/*
++ *----------------------------------------------------------------------
++ *
+  * VNetHubAlloc --
+  *
+  *      Allocate a jack on this hub.
+@@ -360,7 +406,7 @@
+           * Make proc entry for this jack.
+           */
+ 
+-         retval = VNetProc_MakeEntry(jack->name, S_IFREG, &jack->procEntry);
++         retval = VNetProc_MakeEntryOps(jack->name, S_IFREG, &jack->procEntry, &proc_hub_fops, jack);
+          if (retval) {
+             if (retval == -ENXIO) {
+                jack->procEntry = NULL;
+@@ -368,9 +414,6 @@
+ 	       hub->used[i] = FALSE;
+                return NULL;
+             }
+-         } else {
+-            jack->procEntry->read_proc = VNetHubProcRead;
+-            jack->procEntry->data = jack;
+          }
+ 
+          /*
+@@ -692,46 +735,3 @@
+ }
+ 
+ 
+-/*
+- *----------------------------------------------------------------------
+- *
+- * VNetHubProcRead --
+- *
+- *      Callback for read operation on hub entry in vnets proc fs.
+- *
+- * Results:
+- *      Length of read operation.
+- *
+- * Side effects:
+- *      None.
+- *
+- *----------------------------------------------------------------------
+- */
+-
+-int
+-VNetHubProcRead(char    *page,   // IN/OUT: buffer to write into
+-                char   **start,  // OUT: 0 if file < 4k, else offset into page
+-                off_t    off,    // IN: offset of read into the file
+-                int      count,  // IN: maximum number of bytes to read
+-                int     *eof,    // OUT: TRUE if there is nothing more to read
+-                void    *data)   // IN: client data - not used
+-{
+-   VNetJack *jack = (VNetJack*)data;
+-   VNetHub *hub;
+-   int len = 0;
+-
+-   if (!jack || !jack->private) {
+-      return len;
+-   }
+-   hub = (VNetHub*)jack->private;
+-
+-   len += VNetPrintJack(jack, page+len);
+-
+-   len += sprintf(page+len, "tx %u ", hub->stats[jack->index].tx);
+-
+-   len += sprintf(page+len, "\n");
+-
+-   *start = 0;
+-   *eof   = 1;
+-   return len;
+-}
+diff -uN -r vmnet-only-orig/netif.c vmnet-only/netif.c
+--- vmnet-only-orig/netif.c	2013-04-06 23:59:44.000000000 +1100
++++ vmnet-only/netif.c	2013-12-27 00:09:25.525277118 +1100
+@@ -69,10 +69,6 @@
+ static void VNetNetifTxTimeout(struct net_device *dev);
+ #endif
+ 
+-static int  VNetNetIfProcRead(char *page, char **start, off_t off,
+-                              int count, int *eof, void *data);
+-
+-
+ #if 0
+ /*
+  *----------------------------------------------------------------------
+@@ -172,6 +168,53 @@
+ #endif
+ }
+ 
++/*
++ *----------------------------------------------------------------------
++ *
++ * VNetNetIfProcShow --
++ *
++ *      Callback for read operation on this netif entry in vnets proc fs.
++ *
++ * Results: 
++ *      Length of read operation.
++ *
++ * Side effects:
++ *      None.
++ *
++ *----------------------------------------------------------------------
++ */
++
++int
++VNetNetIfProcShow(struct seq_file *seqf, // IN/OUT: buffer to write into
++                  void   *data)  // IN: client data
++{
++   VNetNetIF *netIf = data; 
++   
++   if (!netIf) {
++      return 0;
++   }
++   
++   VNetPrintPort(&netIf->port, seqf);
++
++   seq_printf(seqf, "dev %s ", netIf->dev->name);
++   
++   seq_printf(seqf, "\n");
++
++   return 0;
++}
++
++static int proc_netif_open(struct inode *inode, struct file *file)
++{
++       return single_open(file, VNetNetIfProcShow, PDE_DATA(inode));
++}
++
++static const struct file_operations proc_netif_fops = {
++       .open           = proc_netif_open,
++       .read           = seq_read,
++       .llseek         = seq_lseek,
++       .release        = seq_release,
++};
++
+ 
+ /*
+  *----------------------------------------------------------------------
+@@ -260,8 +303,8 @@
+     * Make proc entry for this jack.
+     */
+    
+-   retval = VNetProc_MakeEntry(netIf->port.jack.name, S_IFREG,
+-                               &netIf->port.jack.procEntry);
++   retval = VNetProc_MakeEntryOps(netIf->port.jack.name, S_IFREG,
++                               &netIf->port.jack.procEntry, &proc_netif_fops, netIf);
+    if (retval) {
+       if (retval == -ENXIO) {
+          netIf->port.jack.procEntry = NULL;
+@@ -269,9 +312,6 @@
+          netIf->port.jack.procEntry = NULL;
+          goto out;
+       }
+-   } else {
+-      netIf->port.jack.procEntry->read_proc = VNetNetIfProcRead;
+-      netIf->port.jack.procEntry->data = netIf;
+    }
+ 
+    /*
+@@ -655,46 +695,3 @@
+ 
+    return &netIf->stats;
+ }
+-
+-
+-/*
+- *----------------------------------------------------------------------
+- *
+- * VNetNetIfProcRead --
+- *
+- *      Callback for read operation on this netif entry in vnets proc fs.
+- *
+- * Results: 
+- *      Length of read operation.
+- *
+- * Side effects:
+- *      None.
+- *
+- *----------------------------------------------------------------------
+- */
+-
+-int
+-VNetNetIfProcRead(char   *page,  // IN/OUT: buffer to write into
+-                  char  **start, // OUT: 0 if file < 4k, else offset into page
+-                  off_t   off,   // IN: (unused) offset of read into the file
+-                  int     count, // IN: (unused) maximum number of bytes to read
+-                  int    *eof,   // OUT: TRUE if there is nothing more to read
+-                  void   *data)  // IN: client data
+-{
+-   VNetNetIF *netIf = (VNetNetIF*)data; 
+-   int len = 0;
+-   
+-   if (!netIf) {
+-      return len;
+-   }
+-   
+-   len += VNetPrintPort(&netIf->port, page+len);
+-
+-   len += sprintf(page+len, "dev %s ", netIf->devName);
+-   
+-   len += sprintf(page+len, "\n");
+-
+-   *start = 0;
+-   *eof   = 1;
+-   return len;
+-}
+Binary files vmnet-only-orig/.netif.c.rej.swp and vmnet-only/.netif.c.rej.swp differ
+Binary files vmnet-only-orig/.netif.c.swp and vmnet-only/.netif.c.swp differ
+diff -uN -r vmnet-only-orig/procfs.c vmnet-only/procfs.c
+--- vmnet-only-orig/procfs.c	2011-09-24 12:44:33.000000000 +1000
++++ vmnet-only/procfs.c	2013-12-27 00:05:57.568208514 +1100
+@@ -45,10 +45,6 @@
+ 
+ #if defined(CONFIG_PROC_FS)
+ 
+-static int VNetProcMakeEntryInt(VNetProcEntry *parent, char *name, int mode,
+-                                VNetProcEntry **ret);
+-static void VNetProcRemoveEntryInt(VNetProcEntry *node, VNetProcEntry *parent);
+-
+ static VNetProcEntry *base = NULL;
+ 
+ 
+@@ -71,7 +67,12 @@
+ int
+ VNetProc_Init(void)
+ {
+-   return VNetProcMakeEntryInt(NULL, "vmnet", S_IFDIR, &base);
++	base = proc_mkdir("vmnet", NULL);
++	if(IS_ERR(base)) {
++		base = NULL;
++		return PTR_ERR(base);
++	}
++	return 0;
+ }
+ 
+ 
+@@ -94,14 +95,14 @@
+ void
+ VNetProc_Cleanup(void)
+ {
+-   VNetProcRemoveEntryInt(base, NULL);
++   proc_remove(base);
+    base = NULL;
+ }
+ 
+ /*
+  *----------------------------------------------------------------------
+  *
+- * VNetProcMakeEntryInt --
++ * VNetProc_MakeEntryOps --
+  *
+  *      Make an entry in the vnets proc file system.
+  *
+@@ -116,72 +117,21 @@
+  */
+ 
+ int
+-VNetProcMakeEntryInt(VNetProcEntry  *parent, // IN:
+-		     char            *name,  // IN:
++VNetProc_MakeEntryOps(char            *name,  // IN:
+ 		     int              mode,  // IN:
+-		     VNetProcEntry  **ret)   // OUT:
++		     VNetProcEntry  **ret,
++		     const struct file_operations *fops,
++		     void *data
++		     )   // OUT:
+ {
+    VNetProcEntry *ent;
+-   ent = create_proc_entry(name, mode, parent);
++   ent = proc_create_data(name, mode, base, fops, data);
+    *ret = ent;
+    if (!ent)
+       return -ENOMEM;
+    return 0;
+ }
+ 
+-
+-/*
+- *----------------------------------------------------------------------
+- *
+- * VNetProcRemoveEntryInt --
+- *
+- *      Remove a previously installed proc entry.
+- *
+- * Results: 
+- *      None.
+- *
+- * Side effects:
+- *      None.
+- *
+- *----------------------------------------------------------------------
+- */
+-
+-void
+-VNetProcRemoveEntryInt(VNetProcEntry *node,
+-                       VNetProcEntry *parent)
+-{
+-   if (node) {
+-      remove_proc_entry(node->name, parent);
+-   }
+-}
+-
+-
+-/*
+- *----------------------------------------------------------------------
+- *
+- * VNetProc_MakeEntry --
+- *
+- *      Make an entry in the vnets proc file system.
+- *
+- * Results: 
+- *      errno. If errno is 0 and ret is non NULL then ret is filled
+- *      in with the resulting proc entry.
+- *      
+- * Side effects:
+- *      None.
+- *
+- *----------------------------------------------------------------------
+- */
+-
+-int
+-VNetProc_MakeEntry(char            *name,  // IN:
+-		   int              mode,  // IN:
+-		   VNetProcEntry  **ret)   // OUT:
+-{
+-   return VNetProcMakeEntryInt(base, name, mode, ret);
+-}
+-
+-
+ /*
+  *----------------------------------------------------------------------
+  *
+@@ -201,7 +151,8 @@
+ void
+ VNetProc_RemoveEntry(VNetProcEntry *node)
+ {
+-   VNetProcRemoveEntryInt(node, base);
++	if(node)
++		proc_remove(node);
+ }
+ 
+ 
+@@ -253,31 +204,6 @@
+ }
+ 
+ 
+-/*
+- *----------------------------------------------------------------------
+- *
+- * VNetProc_MakeEntry --
+- *
+- *      Make an entry in the vnets proc file system.
+- *
+- * Results: 
+- *      errno. If errno is 0 and ret is non NULL then ret is filled
+- *      in with the resulting proc entry.
+- *      
+- * Side effects:
+- *      None.
+- *
+- *----------------------------------------------------------------------
+- */
+-
+-int
+-VNetProc_MakeEntry(char            *name,
+-                   int              mode,
+-                   VNetProcEntry  **ret)
+-{
+-   return -ENXIO;
+-}
+-
+ 
+ /*
+  *----------------------------------------------------------------------
+diff -uN -r vmnet-only-orig/userif.c vmnet-only/userif.c
+--- vmnet-only-orig/userif.c	2013-04-06 23:59:44.000000000 +1100
++++ vmnet-only/userif.c	2013-12-27 00:05:57.569208524 +1100
+@@ -433,7 +433,7 @@
+ /*
+  *----------------------------------------------------------------------
+  *
+- * VNetUserIfProcRead --
++ * VNetUserIfProcShow --
+  *
+  *      Callback for read operation on this userif entry in vnets proc fs.
+  *
+@@ -447,30 +447,23 @@
+  */
+ 
+ static int
+-VNetUserIfProcRead(char    *page,  // IN/OUT: buffer to write into
+-                   char   **start, // OUT: 0 if file < 4k, else offset into
+-                                   //      page
+-                   off_t    off,   // IN: offset of read into the file
+-                   int      count, // IN: maximum number of bytes to read
+-                   int     *eof,   // OUT: TRUE if there is nothing more to
+-                                   //      read
++VNetUserIfProcShow(struct seq_file    *seqf,  // IN/OUT: buffer to write into
+                    void    *data)  // IN: client data - not used
+ {
+    VNetUserIF *userIf = (VNetUserIF*)data; 
+-   int len = 0;
+    
+    if (!userIf) {
+-      return len;
++      return 0;
+    }
+    
+-   len += VNetPrintPort(&userIf->port, page+len);
++   VNetPrintPort(&userIf->port, seqf);
+    
+-   len += sprintf(page+len, "read %u written %u queued %u ",
++   seq_printf(seqf, "read %u written %u queued %u ",
+                   userIf->stats.read,
+                   userIf->stats.written,
+                   userIf->stats.queued);
+    
+-   len += sprintf(page+len, 
++   seq_printf(seqf, 
+ 		  "dropped.down %u dropped.mismatch %u "
+ 		  "dropped.overflow %u dropped.largePacket %u",
+                   userIf->stats.droppedDown,
+@@ -478,13 +471,23 @@
+                   userIf->stats.droppedOverflow,
+ 		  userIf->stats.droppedLargePacket);
+ 
+-   len += sprintf(page+len, "\n");
++   seq_printf(seqf, "\n");
+    
+-   *start = 0;
+-   *eof   = 1;
+-   return len;
++   return 0;
++}
++
++static int proc_userif_open(struct inode *inode, struct file *file)
++{
++       return single_open(file, VNetUserIfProcShow, PDE_DATA(inode));
+ }
+ 
++static const struct file_operations proc_userif_fops = {
++       .open           = proc_userif_open,
++       .read           = seq_read,
++       .llseek         = seq_lseek,
++       .release        = seq_release,
++};
++
+ 
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 4, 4)
+ /*
+@@ -1021,8 +1024,8 @@
+     * Make proc entry for this jack.
+     */
+    
+-   retval = VNetProc_MakeEntry(userIf->port.jack.name, S_IFREG,
+-                               &userIf->port.jack.procEntry);
++   retval = VNetProc_MakeEntryOps(userIf->port.jack.name, S_IFREG,
++                               &userIf->port.jack.procEntry, &proc_userif_fops, userIf);
+    if (retval) {
+       if (retval == -ENXIO) {
+          userIf->port.jack.procEntry = NULL;
+@@ -1030,9 +1033,6 @@
+          kfree(userIf);
+          return retval;
+       }
+-   } else {
+-      userIf->port.jack.procEntry->read_proc = VNetUserIfProcRead;
+-      userIf->port.jack.procEntry->data = userIf;
+    }
+ 
+    /*
+diff -uN -r vmnet-only-orig/vnetInt.h vmnet-only/vnetInt.h
+--- vmnet-only-orig/vnetInt.h	2011-09-24 12:44:33.000000000 +1000
++++ vmnet-only/vnetInt.h	2013-12-27 00:05:57.570208533 +1100
+@@ -169,12 +169,14 @@
+ 
+ void VNetSend(const VNetJack *jack, struct sk_buff *skb);
+ 
+-int VNetProc_MakeEntry(char *name, int mode,
+-                       VNetProcEntry **ret);
++int VNetProc_MakeEntryOps(char *name, int mode,
++                       VNetProcEntry **ret,
++		       const struct file_operations *fops,
++		       void *data);
+ 
+ void VNetProc_RemoveEntry(VNetProcEntry *node);
+ 
+-int VNetPrintJack(const VNetJack *jack, char *buf);
++void VNetPrintJack(const VNetJack *jack, struct seq_file *seqf);
+ 
+ int VNet_MakeMACAddress(VNetPort *port);
+ 
+@@ -193,7 +195,7 @@
+ 
+ Bool VNetCycleDetectIf(const char *name, int generation);
+ 
+-int VNetPrintPort(const VNetPort *port, char *buf);
++void VNetPrintPort(const VNetPort *port, struct seq_file *seqf);
+ 
+ int VNetSnprintf(char *str, size_t size, const char *format, ...);
+ 
